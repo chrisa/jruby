@@ -35,6 +35,7 @@
  ***** END LICENSE BLOCK *****/
 package org.jruby.runtime;
 
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Map;
 import org.jruby.runtime.scope.ManyVarsDynamicScope;
@@ -78,7 +79,7 @@ public final class ThreadContext {
     // Is this thread currently doing an defined? defined should set things like $!
     private boolean isWithinDefined;
     
-    private RubyThread thread;
+    private WeakReference<RubyThread> thread;
     private Fiber fiber;
     
     //private UnsynchronizedStack parentStack;
@@ -129,7 +130,7 @@ public final class ThreadContext {
 
     @Override
     protected void finalize() throws Throwable {
-        thread.dispose();
+        thread.get().dispose();
     }
     
     CallType lastCallType;
@@ -143,11 +144,11 @@ public final class ThreadContext {
     }
     
     public IRubyObject getErrorInfo() {
-        return thread.getErrorInfo();
+        return thread.get().getErrorInfo();
     }
     
     public IRubyObject setErrorInfo(IRubyObject errorInfo) {
-        thread.setErrorInfo(errorInfo);
+        thread.get().setErrorInfo(errorInfo);
         return errorInfo;
     }
     
@@ -250,11 +251,11 @@ public final class ThreadContext {
     }
     
     public RubyThread getThread() {
-        return thread;
+        return thread.get();
     }
     
     public void setThread(RubyThread thread) {
-        this.thread = thread;
+        this.thread = new WeakReference(thread);
     }
     
     public Fiber getFiber() {
@@ -495,7 +496,7 @@ public final class ThreadContext {
     }
     
     public void pollThreadEvents() {
-        thread.pollThreadEvents(this);
+        thread.get().pollThreadEvents(this);
     }
     
     int calls = 0;
