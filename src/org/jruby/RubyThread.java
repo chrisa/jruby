@@ -394,6 +394,10 @@ public class RubyThread extends RubyObject implements ExecutionContext {
         return contextVariables;
     }
 
+    public boolean isAlive(){
+        return threadImpl != null && threadImpl.isAlive() && status != Status.ABORTING;
+    }
+
     @JRubyMethod(name = "[]", required = 1)
     public IRubyObject op_aref(IRubyObject key) {
         IRubyObject value;

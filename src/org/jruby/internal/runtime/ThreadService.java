@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Iterator;
 
 import java.util.WeakHashMap;
 import java.util.concurrent.Future;
@@ -59,6 +60,8 @@ public class ThreadService {
     
     private ReentrantLock criticalLock = new ReentrantLock();
     private Map<RubyThread,ThreadContext> threadContextMap;
+    
+    private ThreadContextReaper reaper;
 
     public ThreadService(Ruby runtime) {
         this.runtime = runtime;
@@ -73,7 +76,8 @@ public class ThreadService {
 
         this.rubyThreadMap = Collections.synchronizedMap(new WeakHashMap<Object, RubyThread>());
         this.threadContextMap = Collections.synchronizedMap(new WeakHashMap<RubyThread,ThreadContext>());
-        
+        this.reaper = new ThreadContextReaper(this);
+
         // Must be called from main thread (it is currently, but this bothers me)
         localContext.set(new SoftReference<ThreadContext>(mainContext));
     }
@@ -82,7 +86,7 @@ public class ThreadService {
         localContext.set(null);
         rubyThreadMap.remove(Thread.currentThread());
     }
-
+    
     /**
      * In order to provide an appropriate execution context for a given thread,
      * we store ThreadContext instances in a threadlocal. This method is a utility
@@ -147,7 +151,7 @@ public class ThreadService {
     }
     
     public synchronized RubyThread[] getActiveRubyThreads() {
-    	// all threads in ruby thread group plus main thread
+        // all threads in ruby thread group plus main thread
 
         synchronized(rubyThreadMap) {
             List<RubyThread> rtList = new ArrayList<RubyThread>(rubyThreadMap.size());
@@ -171,17 +175,16 @@ public class ThreadService {
 
             RubyThread[] rubyThreads = new RubyThread[rtList.size()];
             rtList.toArray(rubyThreads);
-    	
+        
             return rubyThreads;
         }
     }
-
     public Map getRubyThreadMap() {
         return rubyThreadMap;
     }
     
     public ThreadGroup getRubyThreadGroup() {
-    	return rubyThreadGroup;
+        return rubyThreadGroup;
     }
 
     public ThreadContext getThreadContextForThread(RubyThread thread) {
@@ -210,7 +213,25 @@ public class ThreadService {
         getCurrentContext().setThread(null);
         localContext.set(null);
     }
-    
+ 
+    public void unregisterDeadThreads() {
+        synchronized(threadContextMap) {
+            Iterator it = threadContextMap.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<RubyThread,ThreadContext> entry = (Map.Entry<RubyThread,ThreadContext>) it.next();
+                RubyThread t = entry.getKey();
+                try {
+                    if (!t.isAlive()) {
+                        it.remove();
+                    }
+                }
+                catch (Exception e) {
+                    it.remove();
+                }
+            }
+        }
+    }       
+   
     public void setCritical(boolean critical) {
         if (critical && !criticalLock.isHeldByCurrentThread()) {
             criticalLock.lock();
@@ -248,5 +269,26 @@ public class ThreadService {
 
         // then deliver mail to the target
         event.target.receiveMail(event);
+    }
+
+    private class ThreadContextReaper extends Thread {
+        private ThreadService service;
+
+        ThreadContextReaper(ThreadService service) {
+            this.service = service;
+            setDaemon(true);
+            setName("JRuby ThreadContext Reaper");
+            start();
+        }
+        
+        public void run() {
+            for (;;) {
+                try {
+                    Thread.sleep(30000);
+                    service.unregisterDeadThreads();
+                }
+                catch (InterruptedException ignored) { }
+            }
+        }
     }
 }
