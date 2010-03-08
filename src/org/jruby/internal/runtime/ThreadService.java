@@ -31,7 +31,10 @@
 package org.jruby.internal.runtime;
 
 import java.io.IOException;
+import java.lang.ref.Reference;
 import java.lang.ref.SoftReference;
+import java.lang.ref.WeakReference;
+import java.lang.ref.ReferenceQueue;
 import java.nio.channels.Channel;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.Selector;
@@ -42,7 +45,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import java.util.WeakHashMap;
+import java.util.HashMap;
 import java.util.concurrent.Future;
 import org.jruby.Ruby;
 import org.jruby.RubyIO;
@@ -55,10 +58,12 @@ public class ThreadService {
     private ThreadContext mainContext;
     private ThreadLocal<SoftReference<ThreadContext>> localContext;
     private ThreadGroup rubyThreadGroup;
-    private Map<Object, RubyThread> rubyThreadMap;
+
+    private Map<WeakReference<Object>, RubyThread> rubyThreadMap;
+    private ReferenceQueue<WeakReference<Object>> rubyThreadQueue;
+    private Map<RubyThread,ThreadContext> threadContextMap;
     
     private ReentrantLock criticalLock = new ReentrantLock();
-    private Map<RubyThread,ThreadContext> threadContextMap;
 
     public ThreadService(Ruby runtime) {
         this.runtime = runtime;
@@ -71,8 +76,9 @@ public class ThreadService {
             this.rubyThreadGroup = Thread.currentThread().getThreadGroup();
         }
 
-        this.rubyThreadMap = Collections.synchronizedMap(new WeakHashMap<Object, RubyThread>());
-        this.threadContextMap = Collections.synchronizedMap(new WeakHashMap<RubyThread,ThreadContext>());
+        this.rubyThreadMap = Collections.synchronizedMap(new HashMap<WeakReference<Object>, RubyThread>());
+        this.rubyThreadQueue = new ReferenceQueue<WeakReference<Object>>();
+        this.threadContextMap = Collections.synchronizedMap(new HashMap<RubyThread,ThreadContext>());
         
         // Must be called from main thread (it is currently, but this bothers me)
         localContext.set(new SoftReference<ThreadContext>(mainContext));
@@ -82,7 +88,7 @@ public class ThreadService {
         RubyThread thread = getCurrentContext().getThread();
         threadContextMap.remove(thread);
         localContext.set(null);
-        rubyThreadMap.remove(Thread.currentThread());
+        rubyThreadMap.remove(new WeakReference(Thread.currentThread()));
     }
 
     /**
@@ -145,7 +151,7 @@ public class ThreadService {
     public void setMainThread(Thread thread, RubyThread rubyThread) {
         mainContext.setThread(rubyThread);
         threadContextMap.put(rubyThread, mainContext);
-        rubyThreadMap.put(thread, rubyThread);
+        rubyThreadMap.put(new WeakReference(thread, rubyThreadQueue), rubyThread);
     }
     
     public synchronized RubyThread[] getActiveRubyThreads() {
@@ -154,8 +160,8 @@ public class ThreadService {
         synchronized(rubyThreadMap) {
             List<RubyThread> rtList = new ArrayList<RubyThread>(rubyThreadMap.size());
         
-            for (Map.Entry<Object, RubyThread> entry : rubyThreadMap.entrySet()) {
-                Object key = entry.getKey();
+            for (Map.Entry<WeakReference<Object>, RubyThread> entry : rubyThreadMap.entrySet()) {
+                Object key = entry.getKey().get();
                 if (key instanceof Thread) {
                     Thread t = (Thread)key;
 
@@ -178,10 +184,6 @@ public class ThreadService {
         }
     }
 
-    public Map getRubyThreadMap() {
-        return rubyThreadMap;
-    }
-    
     public ThreadGroup getRubyThreadGroup() {
     	return rubyThreadGroup;
     }
@@ -199,15 +201,23 @@ public class ThreadService {
     }
 
     public synchronized void associateThread(Object threadOrFuture, RubyThread rubyThread) {
-        rubyThreadMap.put(threadOrFuture, rubyThread);
+        Reference r;
+
+        while ((r = rubyThreadQueue.poll()) != null) {
+            RubyThread t = rubyThreadMap.get(r);
+            threadContextMap.remove(t);
+            rubyThreadMap.remove(r);
+        }
+
+        rubyThreadMap.put(new WeakReference(threadOrFuture, rubyThreadQueue), rubyThread);
     }
 
     public synchronized void dissociateThread(Object threadOrFuture) {
-        rubyThreadMap.remove(threadOrFuture);
+        rubyThreadMap.remove(new WeakReference(threadOrFuture));
     }
     
     public synchronized void unregisterThread(RubyThread thread) {
-        rubyThreadMap.remove(Thread.currentThread());
+        rubyThreadMap.remove(new WeakReference(Thread.currentThread()));
         threadContextMap.remove(thread);
         getCurrentContext().setThread(null);
         localContext.set(null);
